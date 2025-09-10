@@ -1,2 +1,5 @@
 transformers
 torch
+gradio
+gradio[oauth]
+dotenv
