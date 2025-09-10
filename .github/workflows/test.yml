@@ -17,7 +17,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pytest gradio[oauth] huggingface_hub dotenv
+          pip install pytest gradio[oauth] huggingface_hub dotenv torch
 
       - name: Run pytest with HF token
         env:
