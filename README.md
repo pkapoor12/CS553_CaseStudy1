@@ -14,3 +14,4 @@ hf_oauth_scopes:
 
 A chatbot using [Gradio](https://gradio.app), [`huggingface_hub`](https://huggingface.co/docs/huggingface_hub/v0.22.2/en/index), and the [Hugging Face Inference API](https://huggingface.co/docs/api-inference/index).
 
+Testing to make sure certain actions only trigger on push to main branch
