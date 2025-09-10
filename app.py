@@ -1,5 +1,6 @@
 import gradio as gr
 from huggingface_hub import InferenceClient
+import torch
 import os
 from dotenv import load_dotenv
 import base64
@@ -10,6 +11,47 @@ load_dotenv()
 
 pipe = None
 stop_inference = False
+
+def initialize_local_model():
+    """Initialize SmolVLM model at startup"""
+    global pipe
+    print("🚀 Starting SmolVLM initialization...")
+    try:
+        from transformers import AutoProcessor, AutoModelForVision2Seq
+        import torch
+        
+        model_name = "HuggingFaceTB/SmolVLM-256M-Instruct"
+        print(f"📦 Loading {model_name}...")
+        
+        processor = AutoProcessor.from_pretrained(model_name)
+        print("✅ Processor loaded")
+        
+        model = AutoModelForVision2Seq.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto" if torch.cuda.is_available() else None
+        )
+        print("✅ Model loaded")
+        
+        pipe = {
+            "processor": processor,
+            "model": model
+        }
+        
+        device = "GPU" if torch.cuda.is_available() else "CPU"
+        print(f"🎯 SmolVLM ready on {device}!")
+        
+    except ImportError as e:
+        print(f"⚠️  Missing dependencies for local model: {e}")
+        print("💡 Install with: pip install transformers torch torchvision")
+        pipe = None
+    except Exception as e:
+        print(f"❌ Error loading SmolVLM: {e}")
+        pipe = None
+
+# Initialize the local model at startup
+print("🔄 Initializing local model in background...")
+initialize_local_model()
 
 # Fancy styling
 fancy_css = """
@@ -75,49 +117,84 @@ def prepare_messages_with_images(history, system_message, current_message, curre
     # Add history messages
     for msg in history:
         if isinstance(msg, dict) and "role" in msg and "content" in msg:
+            # Already in proper format
             messages.append(msg)
         elif isinstance(msg, list) and len(msg) == 2:
             # Handle gradio chat format [user_msg, bot_msg]
             user_msg, bot_msg = msg
-            if user_msg:
-                # Check if user message contains images (gradio format)
-                if isinstance(user_msg, dict) and "files" in user_msg:
-                    content = [{"type": "text", "text": user_msg.get("text", "")}]
-                    for file_path in user_msg["files"]:
-                        try:
-                            with Image.open(file_path) as img:
-                                img_b64 = encode_image_to_base64(img)
-                                content.append({
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                                })
-                        except Exception as e:
-                            print(f"Error processing image {file_path}: {e}")
-                    messages.append({"role": "user", "content": content})
-                else:
-                    messages.append({"role": "user", "content": user_msg})
             
-            if bot_msg:
-                messages.append({"role": "assistant", "content": bot_msg})
+            # Process user message
+            if user_msg is not None:
+                user_content = None
+                
+                if isinstance(user_msg, dict):
+                    # Gradio multimodal format: {"text": "...", "files": [...]}
+                    text_part = user_msg.get("text", "").strip()
+                    files_part = user_msg.get("files", [])
+                    
+                    if files_part:
+                        # Has images
+                        content_parts = []
+                        if text_part:
+                            content_parts.append({"type": "text", "text": text_part})
+                        
+                        for file_path in files_part:
+                            try:
+                                with Image.open(file_path) as img:
+                                    img_b64 = encode_image_to_base64(img)
+                                    if img_b64:
+                                        content_parts.append({
+                                            "type": "image_url",
+                                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                                        })
+                            except Exception as e:
+                                print(f"Error processing history image {file_path}: {e}")
+                        
+                        if content_parts:
+                            user_content = content_parts
+                    else:
+                        # Text only from dict
+                        if text_part:
+                            user_content = text_part
+                
+                elif isinstance(user_msg, str):
+                    # Simple text message
+                    if user_msg.strip():
+                        user_content = user_msg.strip()
+                
+                # Add user message if we have content
+                if user_content:
+                    messages.append({"role": "user", "content": user_content})
+            
+            # Process bot response
+            if bot_msg is not None and isinstance(bot_msg, str) and bot_msg.strip():
+                messages.append({"role": "assistant", "content": bot_msg.strip()})
     
     # Add current message with image
-    content = []
-    if current_message:
-        content.append({"type": "text", "text": current_message})
-    
-    if current_image is not None:
-        img_b64 = encode_image_to_base64(current_image)
-        if img_b64:
-            content.append({
-                "type": "image_url", 
-                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-            })
-    
-    if content:
-        if len(content) == 1 and content[0]["type"] == "text":
-            messages.append({"role": "user", "content": content[0]["text"]})
-        else:
-            messages.append({"role": "user", "content": content})
+    if current_message or current_image is not None:
+        current_content = []
+        
+        # Add text if provided
+        if current_message and current_message.strip():
+            current_content.append({"type": "text", "text": current_message.strip()})
+        
+        # Add image if provided
+        if current_image is not None:
+            img_b64 = encode_image_to_base64(current_image)
+            if img_b64:
+                current_content.append({
+                    "type": "image_url", 
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                })
+        
+        # Add current message in appropriate format
+        if current_content:
+            if len(current_content) == 1 and current_content[0]["type"] == "text":
+                # Text only - use simple string format
+                messages.append({"role": "user", "content": current_content[0]["text"]})
+            else:
+                # Multimodal - use array format
+                messages.append({"role": "user", "content": current_content})
     
     return messages
 
@@ -151,21 +228,12 @@ def respond(
 
     if use_local_model:
         print("[MODE] local - SmolVLM")
-        try:
-            from transformers import AutoProcessor, AutoModelForVision2Seq
-            import torch
+        
+        if pipe is None:
+            yield "❌ Local model not available. Please check the console for initialization errors."
+            return
             
-            if pipe is None:
-                model_name = "HuggingFaceTB/SmolVLM-256M-Instruct"
-                pipe = {
-                    "processor": AutoProcessor.from_pretrained(model_name),
-                    "model": AutoModelForVision2Seq.from_pretrained(
-                        model_name,
-                        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        device_map="auto" if torch.cuda.is_available() else None
-                    )
-                }
-
+        try:
             # Prepare prompt for SmolVLM with proper image token handling
             if current_image is not None:
                 # For SmolVLM, we need to include an image token in the prompt when an image is present
@@ -237,7 +305,7 @@ def respond(
             yield response
 
         except Exception as e:
-            yield f"Error with local model: {str(e)}. Please make sure transformers and torch are installed."
+            yield f"Error with local model: {str(e)}"
 
     else:
         print("[MODE] API - Qwen2.5-VL")
@@ -249,8 +317,55 @@ def respond(
         try:
             client = InferenceClient(token=hf_token.token, model="Qwen/Qwen2.5-VL-7B-Instruct")
             
-            # Prepare messages for API
-            messages = prepare_messages_with_images(history, system_message, current_text, current_image)
+            # Simplified message preparation for API - avoid complex history processing
+            messages = [{"role": "system", "content": system_message}]
+            
+            # Only include recent text-only history to avoid format issues
+            for msg in history[-3:]:  # Keep only last 3 exchanges
+                if isinstance(msg, list) and len(msg) == 2:
+                    user_msg, bot_msg = msg
+                    
+                    # Only add simple text messages from history to avoid format issues
+                    if isinstance(user_msg, str) and user_msg.strip():
+                        messages.append({"role": "user", "content": user_msg.strip()})
+                        if isinstance(bot_msg, str) and bot_msg.strip():
+                            messages.append({"role": "assistant", "content": bot_msg.strip()})
+            
+            # Add current message
+            if current_text or current_image is not None:
+                current_content = []
+                
+                if current_text and current_text.strip():
+                    current_content.append({"type": "text", "text": current_text.strip()})
+                
+                if current_image is not None:
+                    img_b64 = encode_image_to_base64(current_image)
+                    if img_b64:
+                        current_content.append({
+                            "type": "image_url", 
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                        })
+                
+                if current_content:
+                    if len(current_content) == 1 and current_content[0]["type"] == "text":
+                        messages.append({"role": "user", "content": current_content[0]["text"]})
+                    else:
+                        messages.append({"role": "user", "content": current_content})
+            
+            # Debug: Print what we're sending to API
+            print("DEBUG: Messages being sent to API:")
+            for i, msg in enumerate(messages):
+                print(f"  [{i}] Role: {msg['role']}")
+                if isinstance(msg['content'], str):
+                    print(f"      Content: {msg['content'][:100]}...")
+                elif isinstance(msg['content'], list):
+                    print(f"      Content: {len(msg['content'])} parts")
+                    for j, part in enumerate(msg['content']):
+                        print(f"        [{j}] Type: {part.get('type', 'unknown')}")
+                        if part.get('type') == 'text':
+                            print(f"            Text: {part.get('text', '')[:50]}...")
+                        elif part.get('type') == 'image_url':
+                            print(f"            Image: base64 data present")
 
             for chunk in client.chat_completion(
                 messages,
@@ -266,6 +381,7 @@ def respond(
                         yield response
 
         except Exception as e:
+            print(f"DEBUG: Full error details: {e}")
             yield f"Error with API model: {str(e)}"
 
 
@@ -288,12 +404,15 @@ with gr.Blocks(css=fancy_css) as demo:
         gr.Markdown("<h1 style='text-align: center;'>🌟 Multimodal AI Chatbot 🖼️</h1>")
         gr.LoginButton()
     
-    gr.Markdown("""
+    gr.Markdown(f"""
     ### Features:
     - 💬 **Text Chat**: Ask questions and have conversations
     - 🖼️ **Image Understanding**: Upload images and ask questions about them
     - 🌐 **API Mode**: Uses Qwen2.5-VL-7B-Instruct (requires HF login)
-    - 🖥️ **Local Mode**: Uses SmolVLM-256M-Instruct (runs locally)
+    - 🖥️ **Local Mode**: Uses SmolVLM-256M-Instruct (preloaded at startup)
+    
+    ### Status:
+    - 🤖 **Local Model**: {'✅ Ready' if pipe is not None else '❌ Not Available'}
     """)
     
     chatbot.render()
