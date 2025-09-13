@@ -45,5 +45,5 @@ def test_local_requires_token():
     assert isinstance(first, str)
 
 # Test that always fails to make sure HuggingFace Space sync only occurs on exit code 0 (success)
-def test_fail():
-    assert 1 == 0
+# def test_fail():
+#     assert 1 == 0
