@@ -93,22 +93,19 @@ fancy_css = """
 }
 """
 
-def encode_image_to_base64(image):
-    """Convert PIL Image to base64 string"""
+def encode_image_to_base64(image, max_side=1024):
     if image is None:
         return None
-    
-    # Convert to RGB if necessary
     if image.mode != 'RGB':
         image = image.convert('RGB')
-    
-    # Save to bytes
+    # Downscale if needed
+    w, h = image.size
+    if max(w, h) > max_side:
+        scale = max_side / float(max(w, h))
+        image = image.resize((int(w * scale), int(h * scale)))
     buffer = io.BytesIO()
-    image.save(buffer, format='JPEG')
-    image_bytes = buffer.getvalue()
-    
-    # Encode to base64
-    return base64.b64encode(image_bytes).decode('utf-8')
+    image.save(buffer, format='JPEG', quality=85, optimize=True)
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
 def prepare_messages_with_images(history, system_message, current_message, current_image):
     """Prepare messages array with proper image handling"""

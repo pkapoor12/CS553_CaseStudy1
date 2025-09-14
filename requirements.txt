@@ -3,3 +3,4 @@ torch
 gradio
 gradio[oauth]
 dotenv
+Pillow
