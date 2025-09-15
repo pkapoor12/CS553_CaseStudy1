@@ -26,10 +26,7 @@ def test_api_requires_token():
     assert isinstance(first, str)
 
 # Test functionality of local model
-def test_local_requires_token():
-    hf_token = os.environ.get("HF_TOKEN")
-    assert hf_token, "HF_TOKEN not set in environment"
-
+def test_local_without_token():
     gen = app.respond(
         message="Hi",
         history=[],
@@ -37,7 +34,7 @@ def test_local_requires_token():
         max_tokens=8,
         temperature=0.2,
         top_p=0.9,
-        hf_token=Token(hf_token),
+        hf_token=None, # token shouldn't be required
         use_local_model=True,
     )
     first = next(gen)
