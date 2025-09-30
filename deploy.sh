@@ -72,3 +72,23 @@ else
 	# Source code exists, so just sync with remote repo
 	${COMMAND} "cd CS553_CaseStudy1 && git pull origin main"
 fi
+
+# Install dependencies
+${COMMAND} "sudo apt install -qq -y python3-venv"
+${COMMAND} "cd CS553_CaseStudy1 && python3 -m venv venv"
+${COMMAND} "cd CS553_CaseStudy1 && source venv/bin/activate && pip install -r requirements.txt"
+
+# Load HF token into remote machine
+# DEBUGGING
+cd ~
+if test -f .env.local; then
+	export $(grep -v '^#' .env.local | xargs)
+else
+	echo "Please create .env.local file with HF_TOKEN"
+	exit 1
+fi
+${COMMAND} "cd CS553_CaseStudy1 && echo 'HF_TOKEN=${HF_TOKEN}' > .env && chmod 600 .env"
+
+# Run the app
+${COMMAND} "nohup CS553_CaseStudy1/venv/bin/python3 CS553_CaseStudy1/app.py > log.txt 2>&1 &"
+echo "App now running at ${MACHINE}:8014"
