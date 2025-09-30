@@ -18,7 +18,6 @@ def test_api_requires_token():
         max_tokens=8,
         temperature=0.2,
         top_p=0.9,
-        hf_token=Token(hf_token),
         use_local_model=False,
     )
     first = next(gen)
@@ -34,7 +33,6 @@ def test_local_without_token():
         max_tokens=8,
         temperature=0.2,
         top_p=0.9,
-        hf_token=None, # token shouldn't be required
         use_local_model=True,
     )
     first = next(gen)
