@@ -64,5 +64,11 @@ cd $HOME/tmp
 rm -rf CS553_CaseStudy1
 git clone https://github.com/pkapoor12/CS553_CaseStudy1.git
 
-# Copy source code to remote machine
-scp -P ${PORT} -o StrictHostKeyChecking=no -r CS553_CaseStudy1 student-admin@${MACHINE}:~/
+# Check if source code exists on remote machine
+if ! eval "$COMMAND 'test -d ~/CS553_CaseStudy1'"; then
+	# Source code doesn't exist, so copy source code to remote machine
+	scp -P ${PORT} -o StrictHostKeyChecking=no -r CS553_CaseStudy1 student-admin@${MACHINE}:~/
+else
+	# Source code exists, so just sync with remote repo
+	${COMMAND} "cd CS553_CaseStudy1 && git pull origin main"
+fi
