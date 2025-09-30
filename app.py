@@ -1,7 +1,7 @@
 import gradio as gr
 from huggingface_hub import InferenceClient
-import torch
 import os
+import torch
 from dotenv import load_dotenv
 import base64
 from PIL import Image
@@ -93,19 +93,22 @@ fancy_css = """
 }
 """
 
-def encode_image_to_base64(image, max_side=1024):
+def encode_image_to_base64(image):
+    """Convert PIL Image to base64 string"""
     if image is None:
         return None
+    
+    # Convert to RGB if necessary
     if image.mode != 'RGB':
         image = image.convert('RGB')
-    # Downscale if needed
-    w, h = image.size
-    if max(w, h) > max_side:
-        scale = max_side / float(max(w, h))
-        image = image.resize((int(w * scale), int(h * scale)))
+    
+    # Save to bytes
     buffer = io.BytesIO()
-    image.save(buffer, format='JPEG', quality=85, optimize=True)
-    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+    image.save(buffer, format='JPEG')
+    image_bytes = buffer.getvalue()
+    
+    # Encode to base64
+    return base64.b64encode(image_bytes).decode('utf-8')
 
 def prepare_messages_with_images(history, system_message, current_message, current_image):
     """Prepare messages array with proper image handling"""
@@ -202,7 +205,6 @@ def respond(
     max_tokens,
     temperature,
     top_p,
-    hf_token: gr.OAuthToken,
     use_local_model: bool,
 ):
     global pipe
@@ -307,12 +309,15 @@ def respond(
     else:
         print("[MODE] API - Qwen2.5-VL")
         
-        if hf_token is None or not getattr(hf_token, "token", None):
-            yield "⚠️ Please log in with your Hugging Face account first."
+        # Get token from environment variable
+        hf_token = os.getenv("HF_TOKEN")
+        
+        if not hf_token:
+            yield "⚠️ HF_TOKEN not found in environment variables. Please set it in .env file."
             return
 
         try:
-            client = InferenceClient(token=hf_token.token, model="Qwen/Qwen2.5-VL-7B-Instruct")
+            client = InferenceClient(token=hf_token, model="Qwen/Qwen2.5-VL-7B-Instruct")
             
             # Simplified message preparation for API - avoid complex history processing
             messages = [{"role": "system", "content": system_message}]
@@ -399,17 +404,17 @@ chatbot = gr.ChatInterface(
 with gr.Blocks(css=fancy_css) as demo:
     with gr.Row():
         gr.Markdown("<h1 style='text-align: center;'>🌟 Multimodal AI Chatbot 🖼️</h1>")
-        gr.LoginButton()
     
     gr.Markdown(f"""
     ### Features:
     - 💬 **Text Chat**: Ask questions and have conversations
     - 🖼️ **Image Understanding**: Upload images and ask questions about them
-    - 🌐 **API Mode**: Uses Qwen2.5-VL-7B-Instruct (requires HF login)
+    - 🌐 **API Mode**: Uses Qwen2.5-VL-7B-Instruct (requires HF token in .env)
     - 🖥️ **Local Mode**: Uses SmolVLM-256M-Instruct (preloaded at startup)
     
     ### Status:
     - 🤖 **Local Model**: {'✅ Ready' if pipe is not None else '❌ Not Available'}
+    - 🔑 **API Token**: {'✅ Configured' if os.getenv('HF_TOKEN') else '❌ Missing'}
     """)
     
     chatbot.render()
