@@ -92,3 +92,18 @@ ${COMMAND} "cd CS553_CaseStudy1 && echo 'HF_TOKEN=${HF_TOKEN}' > .env && chmod 6
 # Run the app
 ${COMMAND} "nohup CS553_CaseStudy1/venv/bin/python3 CS553_CaseStudy1/app.py > log.txt 2>&1 &"
 echo "App now running at ${MACHINE}:8014"
+
+# Start the server monitor
+# Install dependencies
+sudo apt install -qq -y python3-venv
+cd ~/tmp/CS553_CaseStudy1/ops 
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Load webhook URL into environment variables
+echo "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}" > .env && chmod 600 .env
+
+# Run the monitor
+nohup venv/bin/python3 status_monitor.py > log.txt 2>&1 &
+echo "Server status monitor now running"
