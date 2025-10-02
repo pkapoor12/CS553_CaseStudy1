@@ -94,16 +94,26 @@ ${COMMAND} "nohup CS553_CaseStudy1/venv/bin/python3 CS553_CaseStudy1/app.py > lo
 echo "App now running at ${MACHINE}:8014"
 
 # Start the server monitor
-# Install dependencies
-sudo apt install -qq -y python3-venv
+# Install dependencies on local machine if not already present
+if ! python3 -m venv --help >/dev/null 2>&1; then
+    echo "Installing python3-venv on local machine"
+    sudo apt install -qq -y python3-venv
+fi
 cd ~/tmp/CS553_CaseStudy1/ops 
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Load webhook URL into environment variables
-echo "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}" > .env && chmod 600 .env
+# Load webhook URL, ssh passphrase, and sudo password into environment variables
+{
+	echo "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}"
+       	echo "SSH_KEY_PASSPHRASE=${SSH_KEY_PASSPHRASE}"
+	echo "SUDO_PASSWORD=${SUDO_PASSWORD}"
+} > .env && chmod 600 .env
 
 # Run the monitor
+# Sleep for 10 seconds to allow the app to completely start
+sleep 10
+pkill -f status_monitor.py || true
 nohup venv/bin/python3 status_monitor.py > log.txt 2>&1 &
 echo "Server status monitor now running"
