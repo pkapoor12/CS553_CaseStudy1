@@ -112,8 +112,8 @@ pip install -r requirements.txt
 } > .env && chmod 600 .env
 
 # Run the monitor
-# Sleep for 20 seconds to allow the app to completely start
-sleep 20
+# Sleep for 3 minutes to allow the app to completely start (cold start takes a while sometimes)
+sleep 180
 pkill -f status_monitor.py || true
 nohup venv/bin/python3 status_monitor.py > log.txt 2>&1 &
 echo "Server status monitor now running"
