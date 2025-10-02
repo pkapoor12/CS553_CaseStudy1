@@ -66,17 +66,15 @@ def redeploy():
 
     while True:
         i = child.expect([
-            r"Enter passphrase for key.*:",                     # generic ssh prompt
-            r"Enter passphrase for .*secure_key.*:",            # ssh-agent prompt with path
-            r"\[sudo\] password for.*:",                        # sudo password
+            r"Enter passphrase for key.*:",              # ssh key passphrase
+            r"Enter passphrase for .*secure_key.*:",     # ssh-agent passphrase
+            r"\[sudo\] password for.*:",                 # sudo password
             r"Are you sure you want to continue connecting.*",  # trust host prompt
             pexpect.EOF,
             pexpect.TIMEOUT
-        ], timeout=120)
+        ], timeout=3600)  # <-- wait up to 1 hour for any prompt/output
 
-        if i == 0:
-            child.sendline(SSH_KEY_PASSPHRASE)
-        elif i == 1:
+        if i == 0 or i == 1:
             child.sendline(SSH_KEY_PASSPHRASE)
         elif i == 2:
             child.sendline(SUDO_PASSWORD)
@@ -85,7 +83,7 @@ def redeploy():
         elif i == 4:  # finished
             break
         elif i == 5:  # timeout
-            print("Timeout while waiting for deploy.sh")
+            print("Timeout while waiting for deploy.sh (1 hour)")
             break
 
     child.close()
