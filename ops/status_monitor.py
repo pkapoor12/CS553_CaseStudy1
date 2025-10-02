@@ -111,6 +111,7 @@ def main():
                 elapsed_time = time.time() - last_downtime
                 if elapsed_time > REDEPLOY_DELAY:
                     print(f"App down for more than {REDEPLOY_DELAY} seconds, starting redeployment")
+                    send_discord_alert(server_up, status=f"App down for more than {REDEPLOY_DELAY/60} minute(s), starting redeployment")
                     redeploy()
                     last_downtime = None
 
