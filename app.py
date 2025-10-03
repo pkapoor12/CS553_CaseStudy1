@@ -420,4 +420,4 @@ with gr.Blocks(css=fancy_css) as demo:
     chatbot.render()
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(share=True)
