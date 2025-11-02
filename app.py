@@ -6,8 +6,13 @@ from dotenv import load_dotenv
 import base64
 from PIL import Image
 import io
-from prometheus_client import start_http_server, Counter, Histogram, Gauge
+from prometheus_client import start_http_server, Counter, Histogram, Gauge, REGISTRY, GC_COLLECTOR, PROCESS_COLLECTOR, PLATFORM_COLLECTOR
 import time
+
+# Unregister default collectors that might trigger systemd queries
+REGISTRY.unregister(GC_COLLECTOR)
+REGISTRY.unregister(PROCESS_COLLECTOR)
+REGISTRY.unregister(PLATFORM_COLLECTOR)
 
 # Prometheus metrics
 REQUEST_COUNT = Counter('chatbot_requests_total', 'Total number of requests', ['model_type'])
