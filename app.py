@@ -6,6 +6,20 @@ from dotenv import load_dotenv
 import base64
 from PIL import Image
 import io
+from prometheus_client import start_http_server, Counter, Histogram, Gauge
+import time
+
+# Prometheus metrics
+REQUEST_COUNT = Counter('chatbot_requests_total', 'Total number of requests', ['model_type'])
+REQUEST_DURATION = Histogram('chatbot_request_duration_seconds', 'Request duration', ['model_type'])
+ACTIVE_REQUESTS = Gauge('chatbot_active_requests', 'Number of active requests')
+ERROR_COUNT = Counter('chatbot_errors_total', 'Total number of errors', ['model_type', 'error_type'])
+TOKEN_COUNT = Histogram('chatbot_tokens_generated', 'Number of tokens generated', ['model_type'])
+IMAGE_REQUESTS = Counter('chatbot_image_requests_total', 'Total image processing requests', ['model_type'])
+
+# Start Prometheus metrics server on port 8000
+start_http_server(8000)
+print("📊 Prometheus metrics available on port 8000")
 
 load_dotenv()
 
@@ -209,6 +223,14 @@ def respond(
 ):
     global pipe
 
+    model_type = "local" if use_local_model else "api"
+    
+    # Track active requests
+    ACTIVE_REQUESTS.inc()
+    REQUEST_COUNT.labels(model_type=model_type).inc()
+    
+    start_time = time.time()
+
     # Get current image from the multimodal input
     current_image = None
     current_text = message
@@ -220,171 +242,197 @@ def respond(
         if files:
             try:
                 current_image = Image.open(files[0])  # Use first image
+                IMAGE_REQUESTS.labels(model_type=model_type).inc()
             except Exception as e:
                 print(f"Error loading image: {e}")
+                ERROR_COUNT.labels(model_type=model_type, error_type="image_load").inc()
 
     response = ""
 
-    if use_local_model:
-        print("[MODE] local - SmolVLM")
-        
-        if pipe is None:
-            yield "❌ Local model not available. Please check the console for initialization errors."
-            return
+    try:
+        if use_local_model:
+            print("[MODE] local - SmolVLM")
             
-        try:
-            # Prepare prompt for SmolVLM with proper image token handling
-            if current_image is not None:
-                # For SmolVLM, we need to include an image token in the prompt when an image is present
-                prompt = f"{system_message}\n"
-                for msg in history[-3:]:  # Keep last 3 exchanges for context
+            if pipe is None:
+                ERROR_COUNT.labels(model_type=model_type, error_type="model_unavailable").inc()
+                yield "❌ Local model not available. Please check the console for initialization errors."
+                return
+                
+            try:
+                # Prepare prompt for SmolVLM with proper image token handling
+                if current_image is not None:
+                    # For SmolVLM, we need to include an image token in the prompt when an image is present
+                    prompt = f"{system_message}\n"
+                    for msg in history[-3:]:  # Keep last 3 exchanges for context
+                        if isinstance(msg, list) and len(msg) == 2:
+                            user_msg, bot_msg = msg
+                            if user_msg:
+                                prompt += f"User: {user_msg}\n"
+                            if bot_msg:
+                                prompt += f"Assistant: {bot_msg}\n"
+                    
+                    # Add current message with image token
+                    prompt += f"User: <image>\n{current_text}\nAssistant:"
+                    
+                    # Process with image
+                    inputs = pipe["processor"](
+                        text=prompt,
+                        images=current_image,
+                        return_tensors="pt"
+                    )
+                else:
+                    # Text-only mode
+                    prompt = f"{system_message}\n"
+                    for msg in history[-5:]:  # Keep more context for text-only
+                        if isinstance(msg, list) and len(msg) == 2:
+                            user_msg, bot_msg = msg
+                            if user_msg:
+                                prompt += f"User: {user_msg}\n"
+                            if bot_msg:
+                                prompt += f"Assistant: {bot_msg}\n"
+                    
+                    prompt += f"User: {current_text}\nAssistant:"
+                    
+                    # Process text-only
+                    inputs = pipe["processor"](
+                        text=prompt,
+                        return_tensors="pt"
+                    )
+
+                # Move inputs to the same device as model
+                device = next(pipe["model"].parameters()).device
+                inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+
+                # Generate response
+                with torch.no_grad():
+                    outputs = pipe["model"].generate(
+                        **inputs,
+                        max_new_tokens=min(max_tokens, 512),  # Limit tokens for stability
+                        temperature=temperature,
+                        top_p=top_p,
+                        do_sample=True if temperature > 0 else False,
+                        pad_token_id=pipe["processor"].tokenizer.eos_token_id,
+                        eos_token_id=pipe["processor"].tokenizer.eos_token_id,
+                    )
+
+                # Decode response
+                generated_text = pipe["processor"].decode(
+                    outputs[0][inputs["input_ids"].shape[1]:], 
+                    skip_special_tokens=True
+                )
+                
+                # Clean up the response
+                response = generated_text.strip()
+                # Remove any leftover prompt text
+                if "Assistant:" in response:
+                    response = response.split("Assistant:")[-1].strip()
+                
+                # Track tokens generated
+                if response:
+                    TOKEN_COUNT.labels(model_type=model_type).observe(len(response.split()))
+                
+                yield response
+
+            except Exception as e:
+                ERROR_COUNT.labels(model_type=model_type, error_type="generation").inc()
+                yield f"Error with local model: {str(e)}"
+
+        else:
+            print("[MODE] API - Qwen2.5-VL-32B")
+            
+            # Get token from environment variable
+            hf_token = os.getenv("HF_TOKEN")
+            
+            if not hf_token:
+                ERROR_COUNT.labels(model_type=model_type, error_type="missing_token").inc()
+                yield "⚠️ HF_TOKEN not found in environment variables. Please set it in .env file."
+                return
+
+            try:
+                client = InferenceClient(token=hf_token, model="Qwen/Qwen2.5-VL-32B-Instruct")
+                
+                # Simplified message preparation for API - avoid complex history processing
+                messages = [{"role": "system", "content": system_message}]
+                
+                # Only include recent text-only history to avoid format issues
+                for msg in history[-3:]:  # Keep only last 3 exchanges
                     if isinstance(msg, list) and len(msg) == 2:
                         user_msg, bot_msg = msg
-                        if user_msg:
-                            prompt += f"User: {user_msg}\n"
-                        if bot_msg:
-                            prompt += f"Assistant: {bot_msg}\n"
+                        
+                        # Only add simple text messages from history to avoid format issues
+                        if isinstance(user_msg, str) and user_msg.strip():
+                            messages.append({"role": "user", "content": user_msg.strip()})
+                            if isinstance(bot_msg, str) and bot_msg.strip():
+                                messages.append({"role": "assistant", "content": bot_msg.strip()})
                 
-                # Add current message with image token
-                prompt += f"User: <image>\n{current_text}\nAssistant:"
-                
-                # Process with image
-                inputs = pipe["processor"](
-                    text=prompt,
-                    images=current_image,
-                    return_tensors="pt"
-                )
-            else:
-                # Text-only mode
-                prompt = f"{system_message}\n"
-                for msg in history[-5:]:  # Keep more context for text-only
-                    if isinstance(msg, list) and len(msg) == 2:
-                        user_msg, bot_msg = msg
-                        if user_msg:
-                            prompt += f"User: {user_msg}\n"
-                        if bot_msg:
-                            prompt += f"Assistant: {bot_msg}\n"
-                
-                prompt += f"User: {current_text}\nAssistant:"
-                
-                # Process text-only
-                inputs = pipe["processor"](
-                    text=prompt,
-                    return_tensors="pt"
-                )
+                # Add current message
+                if current_text or current_image is not None:
+                    current_content = []
+                    
+                    if current_text and current_text.strip():
+                        current_content.append({"type": "text", "text": current_text.strip()})
+                    
+                    if current_image is not None:
+                        img_b64 = encode_image_to_base64(current_image)
+                        if img_b64:
+                            current_content.append({
+                                "type": "image_url", 
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                            })
+                    
+                    if current_content:
+                        if len(current_content) == 1 and current_content[0]["type"] == "text":
+                            messages.append({"role": "user", "content": current_content[0]["text"]})
+                        else:
+                            messages.append({"role": "user", "content": current_content})
 
-            # Move inputs to the same device as model
-            device = next(pipe["model"].parameters()).device
-            inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
-
-            # Generate response
-            with torch.no_grad():
-                outputs = pipe["model"].generate(
-                    **inputs,
-                    max_new_tokens=min(max_tokens, 512),  # Limit tokens for stability
+                has_yielded = False
+                for chunk in client.chat_completion(
+                    messages,
+                    max_tokens=max_tokens,
+                    stream=True,
                     temperature=temperature,
                     top_p=top_p,
-                    do_sample=True if temperature > 0 else False,
-                    pad_token_id=pipe["processor"].tokenizer.eos_token_id,
-                    eos_token_id=pipe["processor"].tokenizer.eos_token_id,
-                )
-
-            # Decode response
-            generated_text = pipe["processor"].decode(
-                outputs[0][inputs["input_ids"].shape[1]:], 
-                skip_special_tokens=True
-            )
-            
-            # Clean up the response
-            response = generated_text.strip()
-            # Remove any leftover prompt text
-            if "Assistant:" in response:
-                response = response.split("Assistant:")[-1].strip()
-            
-            yield response
-
-        except Exception as e:
-            yield f"Error with local model: {str(e)}"
-
-    else:
-        print("[MODE] API - Qwen2.5-VL")
-        
-        # Get token from environment variable
-        hf_token = os.getenv("HF_TOKEN")
-        
-        if not hf_token:
-            yield "⚠️ HF_TOKEN not found in environment variables. Please set it in .env file."
-            return
-
-        try:
-            client = InferenceClient(token=hf_token, model="Qwen/Qwen2.5-VL-7B-Instruct")
-            
-            # Simplified message preparation for API - avoid complex history processing
-            messages = [{"role": "system", "content": system_message}]
-            
-            # Only include recent text-only history to avoid format issues
-            for msg in history[-3:]:  # Keep only last 3 exchanges
-                if isinstance(msg, list) and len(msg) == 2:
-                    user_msg, bot_msg = msg
+                ):
+                    # Check if this is an error chunk
+                    if hasattr(chunk, 'object') and chunk.object == 'error':
+                        error_message = getattr(chunk, 'message', 'Unknown error')
+                        print(f"API Error: {error_message}")
+                        ERROR_COUNT.labels(model_type=model_type, error_type="api_connection").inc()
+                        yield f"⚠️ API Error: {error_message}"
+                        return
                     
-                    # Only add simple text messages from history to avoid format issues
-                    if isinstance(user_msg, str) and user_msg.strip():
-                        messages.append({"role": "user", "content": user_msg.strip()})
-                        if isinstance(bot_msg, str) and bot_msg.strip():
-                            messages.append({"role": "assistant", "content": bot_msg.strip()})
-            
-            # Add current message
-            if current_text or current_image is not None:
-                current_content = []
+                    # Normal processing
+                    if hasattr(chunk, 'choices') and chunk.choices is not None and len(chunk.choices) > 0:
+                        delta = chunk.choices[0].delta
+                        if hasattr(delta, 'content') and delta.content:
+                            response += delta.content
+                            has_yielded = True
+                            yield response
                 
-                if current_text and current_text.strip():
-                    current_content.append({"type": "text", "text": current_text.strip()})
-                
-                if current_image is not None:
-                    img_b64 = encode_image_to_base64(current_image)
-                    if img_b64:
-                        current_content.append({
-                            "type": "image_url", 
-                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                        })
-                
-                if current_content:
-                    if len(current_content) == 1 and current_content[0]["type"] == "text":
-                        messages.append({"role": "user", "content": current_content[0]["text"]})
-                    else:
-                        messages.append({"role": "user", "content": current_content})
-            
-            # Debug: Print what we're sending to API
-            print("DEBUG: Messages being sent to API:")
-            for i, msg in enumerate(messages):
-                print(f"  [{i}] Role: {msg['role']}")
-                if isinstance(msg['content'], str):
-                    print(f"      Content: {msg['content'][:100]}...")
-                elif isinstance(msg['content'], list):
-                    print(f"      Content: {len(msg['content'])} parts")
-                    for j, part in enumerate(msg['content']):
-                        print(f"        [{j}] Type: {part.get('type', 'unknown')}")
-                        if part.get('type') == 'text':
-                            print(f"            Text: {part.get('text', '')[:50]}...")
-                        elif part.get('type') == 'image_url':
-                            print(f"            Image: base64 data present")
+                # If we never yielded anything, yield an error message
+                if not has_yielded:
+                    error_msg = "⚠️ API returned no response. The model might be unavailable or overloaded. Try again in a moment."
+                    ERROR_COUNT.labels(model_type=model_type, error_type="empty_response").inc()
+                    yield error_msg
+                    return
 
-            for chunk in client.chat_completion(
-                messages,
-                max_tokens=max_tokens,
-                stream=True,
-                temperature=temperature,
-                top_p=top_p,
-            ):
-                if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, 'content') and delta.content:
-                        response += delta.content
-                        yield response
+                # Track tokens generated based on final response
+                if response:
+                    TOKEN_COUNT.labels(model_type=model_type).observe(len(response.split()))
 
-        except Exception as e:
-            print(f"DEBUG: Full error details: {e}")
-            yield f"Error with API model: {str(e)}"
+            except Exception as e:
+                import traceback
+                print(f"API Error: {e}")
+                print(f"Traceback:\n{traceback.format_exc()}")
+                ERROR_COUNT.labels(model_type=model_type, error_type="api_error").inc()
+                yield f"Error with API model: {str(e)}"
+    
+    finally:
+        # Track request duration and decrement active requests
+        duration = time.time() - start_time
+        REQUEST_DURATION.labels(model_type=model_type).observe(duration)
+        ACTIVE_REQUESTS.dec()
 
 
 # Create the multimodal chatbot interface
