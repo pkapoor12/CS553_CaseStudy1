@@ -475,4 +475,4 @@ with gr.Blocks(css=fancy_css) as demo:
     chatbot.render()
 
 if __name__ == "__main__":
-    demo.launch(share=True)
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
