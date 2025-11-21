@@ -9,14 +9,15 @@ import io
 from prometheus_client import start_http_server, Counter, Histogram, Gauge, REGISTRY
 import time
 
-# Unregister default collectors that might trigger systemd queries
-for collector in list(REGISTRY._collector_to_names.keys()):
-    try:
-        REGISTRY.unregister(collector)
-    except Exception:
-        pass
+# Load environment variables (useful for local dev; Cloud Run will provide env vars too)
+load_dotenv()
 
-# Prometheus metrics
+# ===== Prometheus configuration (optional for Cloud Run) =====
+
+# Control Prometheus HTTP server via env var (default: disabled)
+RUN_METRICS = os.getenv("RUN_METRICS", "false").lower() == "true"
+
+# Prometheus metrics (defined regardless so rest of code can use them)
 REQUEST_COUNT = Counter('chatbot_requests_total', 'Total number of requests', ['model_type'])
 REQUEST_DURATION = Histogram('chatbot_request_duration_seconds', 'Request duration', ['model_type'])
 ACTIVE_REQUESTS = Gauge('chatbot_active_requests', 'Number of active requests')
@@ -24,17 +25,25 @@ ERROR_COUNT = Counter('chatbot_errors_total', 'Total number of errors', ['model_
 TOKEN_COUNT = Histogram('chatbot_tokens_generated', 'Number of tokens generated', ['model_type'])
 IMAGE_REQUESTS = Counter('chatbot_image_requests_total', 'Total image processing requests', ['model_type'])
 
-# Start Prometheus metrics server on port 8000
-start_http_server(8000)
-print("📊 Prometheus metrics available on port 8000")
+if RUN_METRICS:
+    # Unregister default collectors that might trigger systemd queries
+    for collector in list(REGISTRY._collector_to_names.keys()):
+        try:
+            REGISTRY.unregister(collector)
+        except Exception:
+            pass
 
-load_dotenv()
+    # Start Prometheus metrics server on port 8000 (for local/VM use, not needed on Cloud Run)
+    start_http_server(8000)
+    print("📊 Prometheus metrics available on port 8000")
+else:
+    print("📊 Prometheus metrics disabled (RUN_METRICS != 'true')")
 
 pipe = None
 stop_inference = False
 
 def initialize_local_model():
-    """Initialize SmolVLM model at startup"""
+    """Initialize SmolVLM model at startup (optional for Cloud Run)"""
     global pipe
     print("🚀 Starting SmolVLM initialization...")
     try:
@@ -70,9 +79,14 @@ def initialize_local_model():
         print(f"❌ Error loading SmolVLM: {e}")
         pipe = None
 
-# Initialize the local model at startup
-print("🔄 Initializing local model in background...")
-initialize_local_model()
+# Control local model via env var (Cloud Run: leave this false; local: set ENABLE_LOCAL_MODEL=true)
+ENABLE_LOCAL_MODEL = os.getenv("ENABLE_LOCAL_MODEL", "false").lower() == "true"
+
+if ENABLE_LOCAL_MODEL:
+    print("🔄 Initializing local model in background...")
+    initialize_local_model()
+else:
+    print("ℹ️ Local model disabled (ENABLE_LOCAL_MODEL != 'true').")
 
 # Fancy styling
 fancy_css = """
@@ -352,7 +366,7 @@ def respond(
             
             if not hf_token:
                 ERROR_COUNT.labels(model_type=model_type, error_type="missing_token").inc()
-                yield "⚠️ HF_TOKEN not found in environment variables. Please set it in .env file."
+                yield "⚠️ HF_TOKEN not found. Please set it as an environment variable (e.g. in Cloud Run settings or .env for local development)."
                 return
 
             try:
@@ -464,8 +478,8 @@ with gr.Blocks(css=fancy_css) as demo:
     ### Features:
     - 💬 **Text Chat**: Ask questions and have conversations
     - 🖼️ **Image Understanding**: Upload images and ask questions about them
-    - 🌐 **API Mode**: Uses Qwen2.5-VL-7B-Instruct (requires HF token in .env)
-    - 🖥️ **Local Mode**: Uses SmolVLM-256M-Instruct (preloaded at startup)
+    - 🌐 **API Mode**: Uses Qwen2.5-VL-7B-Instruct (requires HF token in environment)
+    - 🖥️ **Local Mode**: Uses SmolVLM-256M-Instruct (preloaded at startup when enabled)
     
     ### Status:
     - 🤖 **Local Model**: {'✅ Ready' if pipe is not None else '❌ Not Available'}
@@ -475,4 +489,12 @@ with gr.Blocks(css=fancy_css) as demo:
     chatbot.render()
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    # Cloud Run will provide PORT; default to 7860 for local development
+    port = int(os.environ.get("PORT", 7860))
+    print(f"🚀 Starting app on 0.0.0.0:{port}")
+
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=port,
+        share=False
+    )
